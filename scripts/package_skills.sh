@@ -20,22 +20,47 @@ for skill in plugins/*/skills/*/; do
   mkdir -p "$stage"
   cp "$skill/SKILL.md" "$stage/"
 
-  # Plays: only the specific play files the skill references.
+  # Plays: only the specific play files the skill references. Their own
+  # references (templates, data) are followed too, so they are scanned
+  # alongside SKILL.md.
+  docs="$skill/SKILL.md"
   for play in $(grep -ohE 'plays/[A-Za-z0-9._-]+\.md' "$skill/SKILL.md" | sort -u); do
     mkdir -p "$stage/plays"
     cp "$plugin/$play" "$stage/plays/"
+    docs="$docs $plugin/$play"
   done
 
   # Templates: the whole dir when referenced (two small files).
-  if grep -q 'templates/' "$skill/SKILL.md"; then
-    cp -R "$plugin/templates" "$stage/templates"
+  if grep -q 'templates/' $docs; then
+    cp -RL "$plugin/templates" "$stage/templates"
   fi
 
-  # Data: each referenced dataset, minus READMEs (never loaded at runtime).
-  for d in $(grep -ohE 'data/[a-z-]+' "$skill/SKILL.md" | sort -u); do
+  # Data: each referenced dataset. READMEs are dropped unless a doc cites
+  # one (e.g. data/asvs/README.md as the chapter index). find -L follows
+  # data dirs that are symlinks; an empty result is an error, not a
+  # silently data-less zip.
+  # The boundary keeps URLs like .../meta-data/iam/ from matching.
+  for d in $(grep -ohE '(^|[^A-Za-z0-9_/-])data/[a-z-]+' $docs | grep -oE 'data/[a-z-]+' | sort -u); do
+    # A play citing a dataset this plugin lacks (repo-root data/opencre,
+    # prose like "data/services") is skipped; SKILL.md citing one fails.
+    if [ ! -e "$plugin/$d" ] && ! grep -qE "(^|[^A-Za-z0-9_/-])$d" "$skill/SKILL.md"; then
+      echo "note: $name: skipping $d (cited by a play, not in $plugin)" >&2
+      continue
+    fi
     mkdir -p "$stage/$d"
-    find "$plugin/$d" -name '*.md' ! -name 'README.md' -exec cp {} "$stage/$d/" \;
+    find -L "$plugin/$d" -name '*.md' ! -name 'README.md' -exec cp {} "$stage/$d/" \;
+    if grep -qh "$d/README.md" $docs; then
+      cp "$plugin/$d/README.md" "$stage/$d/"
+    fi
+    if [ -z "$(ls -A "$stage/$d")" ]; then
+      echo "ERROR: $name: $d vendored 0 files" >&2
+      exit 1
+    fi
   done
+
+  # SKILL.md links to ../../plays and ../../templates (relative to its
+  # place in the repo); in the zip those sit next to it.
+  sed -i.bak 's#](\.\./\.\./#](#g' "$stage/SKILL.md" && rm "$stage/SKILL.md.bak"
 
   # ponytail: MASTG tests are only ever loaded via the mastg_tests lists in
   # the MASVS files, so unreferenced tests are pruned to fit the 200-file
